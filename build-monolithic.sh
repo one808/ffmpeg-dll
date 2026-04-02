@@ -149,23 +149,38 @@ build_x265() {
     echo "==> [5/7] Building x265..."
     cd "$BUILDROOT"
     if [[ ! -d x265 ]]; then
+        hg clone https://hg.videolan.org/x265 x265 || \
+        git clone --depth=1 https://github.com/nicbarker/x265.git || \
         git clone --depth=1 https://bitbucket.org/multicoreware/x265_git.git x265
     fi
     cd x265/source
-    mkdir -p build && cd build
+    rm -rf build && mkdir -p build && cd build
+
+    # Create a cmake toolchain file for MinGW cross-compile
+    cat > toolchain.cmake <<EOF
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR $FFMPEG_ARCH)
+set(CMAKE_C_COMPILER $CC)
+set(CMAKE_CXX_COMPILER $CXX)
+set(CMAKE_RC_COMPILER ${CROSS}-windres)
+set(CMAKE_ASM_NASM_COMPILER nasm)
+set(CMAKE_FIND_ROOT_PATH $PREFIX)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+EOF
+
     cmake .. \
-        -DCMAKE_SYSTEM_NAME=Windows \
-        -DCMAKE_C_COMPILER="$CC" \
-        -DCMAKE_CXX_COMPILER="$CXX" \
-        -DCMAKE_AR="$AR" \
-        -DCMAKE_RANLIB="$RANLIB" \
+        -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" \
         -DENABLE_SHARED=OFF \
         -DENABLE_CLI=OFF \
+        -DENABLE_PIC=OFF \
+        -DHIGH_BIT_DEPTH=ON \
         -DCMAKE_C_FLAGS="-O2" \
-        -DCMAKE_CXX_FLAGS="-O2" 2>&1 | tail -5
-    make -j"$JOBS" 2>&1 | tail -3
-    make install 2>&1 | tail -3
+        -DCMAKE_CXX_FLAGS="-O2" 2>&1 | tail -10
+    make -j"$JOBS" 2>&1 | tail -5
+    make install 2>&1 | tail -5
     echo "    x265 done"
 }
 
@@ -289,16 +304,28 @@ echo "========================================"
 echo " Building dependencies (static libs)"
 echo "========================================"
 
-# Essential deps
-build_zlib || echo "WARN: zlib failed (may not be needed)"
-build_bzip2 || echo "WARN: bzip2 failed"
-build_libiconv || echo "WARN: libiconv failed"
-build_x264 || echo "WARN: x264 failed"
-build_x265 || echo "WARN: x265 failed"
-build_fdk_aac || echo "WARN: fdk-aac failed"
-build_lame || echo "WARN: lame failed"
-build_opus || echo "WARN: opus failed"
-build_vorbis || echo "WARN: vorbis failed"
+# Track which codecs are available
+AVAILABLE_CODECS=""
+
+build_dep() {
+    local name="$1" func="$2" codec="$3"
+    if $func; then
+        echo "    $name OK"
+        [[ -n "$codec" ]] && AVAILABLE_CODECS="$AVAILABLE_CODECS $codec"
+    else
+        echo "    WARN: $name failed (skipping)"
+    fi
+}
+
+build_dep "zlib"      build_zlib      ""
+build_dep "bzip2"     build_bzip2     ""
+build_dep "libiconv"  build_libiconv  ""
+build_dep "x264"      build_x264      "--enable-libx264"
+build_dep "x265"      build_x265      "--enable-libx265"
+build_dep "fdk-aac"   build_fdk_aac   "--enable-libfdk-aac"
+build_dep "lame"      build_lame      "--enable-libmp3lame"
+build_dep "opus"      build_opus      "--enable-libopus"
+build_dep "vorbis"    build_vorbis    "--enable-libvorbis"
 
 # ── Step 2: Build FFmpeg as static libs ──
 echo ""
@@ -330,6 +357,7 @@ EXTRA_LIBS="-lstdc++"
     --disable-shared \
     --enable-gpl \
     --enable-version3 \
+    --enable-nonfree \
     --disable-debug \
     --disable-doc \
     --disable-ffplay \
@@ -337,12 +365,7 @@ EXTRA_LIBS="-lstdc++"
     --disable-ffmpeg \
     --disable-autodetect \
     --disable-programs \
-    --enable-libx264 \
-    --enable-libx265 \
-    --enable-libfdk-aac \
-    --enable-libmp3lame \
-    --enable-libopus \
-    --enable-libvorbis \
+    $AVAILABLE_CODECS \
     --pkg-config="pkg-config" \
     --pkg-config-flags="--static" \
     --extra-cflags="-O2 -I$PREFIX/include" \
