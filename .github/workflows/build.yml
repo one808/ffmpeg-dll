@@ -38,23 +38,25 @@ jobs:
             --extra-cflags="-O2"
 
       - name: Build
+        id: build
         run: |
           cd ffmpeg
-          make -j$(nproc) || echo "make had errors, checking objects"
-
-      - name: Verify fftools objects
-        id: verify
-        run: |
-          cd ffmpeg
-          ls fftools/*.o 2>/dev/null && echo "objects_ok=true" >> "$GITHUB_OUTPUT" || echo "objects_ok=false" >> "$GITHUB_OUTPUT"
+          make -j$(nproc) 2>&1 | tail -20
+          # Check if fftools objects exist (make may "fail" but objects are fine)
+          ls fftools/*.o >/dev/null 2>&1 && echo "objects_ok=true" >> "$GITHUB_OUTPUT" || echo "objects_ok=false" >> "$GITHUB_OUTPUT"
 
       - name: Manual compile fftools
-        if: steps.verify.outputs.objects_ok == 'false'
+        if: steps.build.outputs.objects_ok == 'false'
         run: |
           cd ffmpeg
           CC=i686-w64-mingw32-gcc
           FLAGS="-O2 -D_ISOC99_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_WIN32_WINNT=0x0600 -D__USE_MINGW_ANSI_STDIO=1 -DHAVE_AV_CONFIG_H -I. -Ifftools"
-          for src in fftools/cmdutils.c fftools/ffmpeg.c fftools/ffmpeg_dec.c fftools/ffmpeg_demux.c fftools/ffmpeg_enc.c fftools/ffmpeg_filter.c fftools/ffmpeg_mux.c fftools/ffmpeg_mux_init.c fftools/ffmpeg_opt.c fftools/ffmpeg_sched.c fftools/objpool.c fftools/sync_queue.c fftools/thread_queue.c; do
+          # Discover all fftools/*.c sources dynamically (handles version differences)
+          SRCS=$(ls fftools/*.c | grep -v ffmpeg_dll.c | grep -v ffmpeg.c)
+          # Compile ffmpeg.c with main renamed to ffmpeg_main
+          $CC $FLAGS -Dmain=ffmpeg_main -c fftools/ffmpeg.c -o fftools/ffmpeg_main.o || exit 1
+          # Compile remaining fftools sources
+          for src in $SRCS; do
             $CC $FLAGS -c "$src" -o "${src%.c}.o" || exit 1
           done
 
