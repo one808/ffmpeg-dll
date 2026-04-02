@@ -1,0 +1,8 @@
+*.o
+*.dll
+*.dll.a
+*.exe
+*.zip
+release/
+prefix/
+ffmpeg/
