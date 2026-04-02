@@ -1,0 +1,71 @@
+name: Build monolithic ffmpeg.dll
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          df -h
+          sudo apt-get clean
+          sudo rm -rf /opt/ghc /usr/local/.ghcup /usr/local/lib/android
+          docker system prune -a -f 2>/dev/null || true
+          df -h
+
+      - name: Install cross-compile toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-mingw-w64-i686 g++-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+            nasm yasm make git pkg-config cmake \
+            autoconf automake libtool gettext autopoint
+
+      - name: Build monolithic ffmpeg.dll (win32)
+        run: |
+          chmod +x build-monolithic.sh
+          ./build-monolithic.sh win32
+
+      - name: Build monolithic ffmpeg.dll (win64)
+        run: |
+          # Clean for fresh win64 build
+          rm -rf build-mono prefix
+          ./build-monolithic.sh win64
+          mv ffmpeg.dll ffmpeg64.dll
+          mv libffmpeg.dll.a libffmpeg64.dll.a 2>/dev/null || true
+
+      - name: Package
+        run: |
+          mkdir -p release
+          # win32
+          cp ffmpeg.dll release/ 2>/dev/null || true
+          cp libffmpeg.dll.a release/ 2>/dev/null || true
+          # win64
+          cp ffmpeg64.dll release/ 2>/dev/null || true
+          cp libffmpeg64.dll.a release/ 2>/dev/null || true
+          ls -lh release/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-dll-monolithic
+          path: release/
+
+      - name: Create release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "ffmpeg.dll Monolithic"
+          files: "release/*"
