@@ -2,17 +2,8 @@ name: Build ffmpeg.dll (Win32)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      ffmpeg_version:
-        description: 'FFmpeg branch/tag (e.g. release/7.1, master)'
-        required: false
-        default: 'release/7.1'
-
-env:
-  FFMPEG_BRANCH: ${{ github.event.inputs.ffmpeg_version || 'release/7.1' }}
-  PREFIX: ${{ github.workspace }}/prefix
 
 jobs:
   build:
@@ -23,18 +14,17 @@ jobs:
       - name: Install cross-compile toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            gcc-mingw-w64-i686 g++-mingw-w64-i686 \
-            nasm yasm pkg-config make git
+          sudo apt-get install -y gcc-mingw-w64-i686 g++-mingw-w64-i686 nasm yasm pkg-config make git
 
       - name: Clone FFmpeg
-        run: git clone --depth=1 --branch=${{ env.FFMPEG_BRANCH }} https://github.com/FFmpeg/FFmpeg.git ffmpeg
+        run: |
+          git clone --depth=1 --branch=release/7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
 
-      - name: Configure FFmpeg (win32 shared)
+      - name: Configure FFmpeg
         run: |
           cd ffmpeg
           ./configure \
-            --prefix=${{ env.PREFIX }} \
+            --prefix="${{ github.workspace }}/prefix" \
             --target-os=mingw32 \
             --arch=x86 \
             --cross-prefix=i686-w64-mingw32- \
@@ -45,106 +35,60 @@ jobs:
             --disable-doc \
             --disable-ffplay \
             --disable-ffprobe \
-            --extra-cflags="-O2" \
-            --extra-ldflags=""
+            --extra-cflags="-O2"
 
-      - name: Build libraries + fftools objects
-        id: build
+      - name: Build
         run: |
           cd ffmpeg
-          # 编译所有 .o（库 + 程序对象文件）
-          # make 可能在最后链接 exe 时报错（交叉环境），但 .o 已经生成
-          make -j$(nproc) 2>&1 | tee build.log || true
+          make -j$(nproc) || echo "make had errors, checking objects"
 
-          # 验证 fftools 对象文件是否存在
-          echo "=== fftools objects ==="
-          ls -la fftools/*.o || true
-
-          MISSING=""
-          for f in ffmpeg_dec ffmpeg_demux ffmpeg_enc ffmpeg_filter \
-                   ffmpeg_mux ffmpeg_mux_init ffmpeg_opt ffmpeg_sched \
-                   ffmpeg objpool sync_queue thread_queue cmdutils; do
-            [ ! -f "fftools/${f}.o" ] && MISSING="${MISSING} ${f}"
-          done
-
-          if [ -n "$MISSING" ]; then
-            echo "Missing objects:${MISSING}"
-            echo "missing=true" >> $GITHUB_OUTPUT
-          else
-            echo "All fftools objects found"
-            echo "missing=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Fallback: manual compile fftools
-        if: ${{ steps.build.outputs.missing == 'true' }}
+      - name: Verify fftools objects
+        id: verify
         run: |
           cd ffmpeg
-          # 如果 make 没生成对象文件，手动用 gcc 编译
-          CFLAGS="-O2 -D_ISOC99_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE \
-                   -D_WIN32_WINNT=0x0600 -D__USE_MINGW_ANSI_STDIO=1 \
-                   -DHAVE_AV_CONFIG_H -I. -Ifftools"
-          CC="i686-w64-mingw32-gcc"
+          ls fftools/*.o 2>/dev/null && echo "objects_ok=true" >> "$GITHUB_OUTPUT" || echo "objects_ok=false" >> "$GITHUB_OUTPUT"
 
-          for src in fftools/cmdutils.c fftools/ffmpeg.c fftools/ffmpeg_dec.c \
-                     fftools/ffmpeg_demux.c fftools/ffmpeg_enc.c \
-                     fftools/ffmpeg_filter.c fftools/ffmpeg_mux.c \
-                     fftools/ffmpeg_mux_init.c fftools/ffmpeg_opt.c \
-                     fftools/ffmpeg_sched.c fftools/objpool.c \
-                     fftools/sync_queue.c fftools/thread_queue.c; do
-            obj="${src%.c}.o"
-            echo "Compiling ${src}..."
-            $CC $CFLAGS -c "$src" -o "$obj" || { echo "FAILED: $src"; exit 1; }
+      - name: Manual compile fftools
+        if: steps.verify.outputs.objects_ok == 'false'
+        run: |
+          cd ffmpeg
+          CC=i686-w64-mingw32-gcc
+          FLAGS="-O2 -D_ISOC99_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_WIN32_WINNT=0x0600 -D__USE_MINGW_ANSI_STDIO=1 -DHAVE_AV_CONFIG_H -I. -Ifftools"
+          for src in fftools/cmdutils.c fftools/ffmpeg.c fftools/ffmpeg_dec.c fftools/ffmpeg_demux.c fftools/ffmpeg_enc.c fftools/ffmpeg_filter.c fftools/ffmpeg_mux.c fftools/ffmpeg_mux_init.c fftools/ffmpeg_opt.c fftools/ffmpeg_sched.c fftools/objpool.c fftools/sync_queue.c fftools/thread_queue.c; do
+            $CC $FLAGS -c "$src" -o "${src%.c}.o" || exit 1
           done
-
-          echo "Manual compile done"
-          ls -la fftools/*.o
 
       - name: Build ffmpeg.dll
         run: |
           cd ffmpeg
-          CC="i686-w64-mingw32-gcc"
-
-          # 把 wrapper 也编译为 .o
+          CC=i686-w64-mingw32-gcc
           $CC -O2 -I. -Ifftools -c ../src/ffmpeg_dll.c -o fftools/ffmpeg_dll.o
-
-          # 链接所有 fftools .o → ffmpeg.dll
-          $CC -shared -o ../ffmpeg.dll \
-            fftools/*.o \
-            -L${{ env.PREFIX }}/lib \
-            -lavcodec -lavformat -lavutil \
-            -lswscale -lswresample -lavfilter \
+          $CC -shared -o ../ffmpeg.dll fftools/*.o \
+            -L"${{ github.workspace }}/prefix/lib" \
+            -lavcodec -lavformat -lavutil -lswscale -lswresample -lavfilter \
             -lws2_32 -lbcrypt -lpthread \
             -Wl,--out-implib,../libffmpeg.dll.a \
             -Wl,--export-all-symbols
-
-          echo "=== Output ==="
-          ls -la ../ffmpeg.dll ../libffmpeg.dll.a
           file ../ffmpeg.dll
 
-      - name: Collect shared libraries
+      - name: Collect artifacts
         run: |
-          mkdir -p release/bin
-          # 复制编译产出的 shared DLL
-          cp ffmpeg.dll release/bin/
-          cp libffmpeg.dll.a release/bin/
-          # 从 prefix 复制 av*.dll sw*.dll
-          find ${{ env.PREFIX }}/bin -name '*.dll' -exec cp {} release/bin/ \;
-          echo "=== Release contents ==="
-          ls -la release/bin/
+          mkdir -p release
+          cp ffmpeg.dll release/
+          cp libffmpeg.dll.a release/
+          find "${{ github.workspace }}/prefix/bin" -name "*.dll" -exec cp {} release/ \;
+          ls -la release/
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-dll-win32
-          path: release/bin/
+          path: release/
 
       - name: Create release
-        if: ${{ github.ref == 'refs/heads/main' }}
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "ffmpeg.dll (Win32 Shared)"
-          files: release/bin/*
-          body: |
-            Auto-built ffmpeg.dll + shared dependencies (Win32)
-            FFmpeg branch: ${{ env.FFMPEG_BRANCH }}
+          name: "ffmpeg.dll Win32"
+          files: "release/*"
