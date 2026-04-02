@@ -76,7 +76,7 @@ jobs:
           fi
 
       - name: Fallback: manual compile fftools
-        if: steps.build.outputs.missing == 'true'
+        if: ${{ steps.build.outputs.missing == 'true' }}
         run: |
           cd ffmpeg
           # 如果 make 没生成对象文件，手动用 gcc 编译
@@ -139,7 +139,7 @@ jobs:
           path: release/bin/
 
       - name: Create release
-        if: github.ref == 'refs/heads/main'
+        if: ${{ github.ref == 'refs/heads/main' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
